@@ -1,0 +1,7 @@
+{
+  "participants": ["Athos Pugliese"],
+  "social": ["https://github.com/athospugliese"],
+  "source-code-repo": "https://github.com/athospugliese/rinha-de-backend-2026",
+  "stack": ["rust", "glommio", "ivf", "nginx"],
+  "open_to_work": false
+}
