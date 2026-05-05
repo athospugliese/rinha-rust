@@ -121,16 +121,33 @@ fn compute_centroid_dists(q: &[i16; DIM], centroids: &[f32]) -> Vec<f32> {
     let q_f32: [f32; DIM] = std::array::from_fn(|i| q[i] as f32 / QUANT_SCALE);
 
     let mut dists = vec![0f32; K];
+    let chunk = 8;
+    let n_chunks = K / chunk;
 
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2", target_feature = "fma"))]
-    unsafe {
-        compute_centroid_dists_avx2(&q_f32, centroids, &mut dists);
-        return dists;
+    use wide::f32x8;
+
+    for c in 0..n_chunks {
+        let mut acc = f32x8::ZERO;
+        let base = c * chunk;
+        for d in 0..DIM {
+            let mut tmp = [0f32; 8];
+            let row = d * K + base;
+            tmp.copy_from_slice(&centroids[row..row + chunk]);
+            let cv = f32x8::from(tmp);
+            let qv = f32x8::splat(q_f32[d]);
+            let diff = cv - qv;
+            acc += diff * diff;
+        }
+        let arr = acc.to_array();
+        for i in 0..chunk {
+            dists[base + i] = arr[i];
+        }
     }
-
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2", target_feature = "fma")))]
-    {
-        for ci in 0..K {
+    let rem = K % chunk;
+    if rem > 0 {
+        let base = n_chunks * chunk;
+        for off in 0..rem {
+            let ci = base + off;
             let mut s = 0f32;
             for d in 0..DIM {
                 let cv = centroids[d * K + ci];
@@ -139,68 +156,8 @@ fn compute_centroid_dists(q: &[i16; DIM], centroids: &[f32]) -> Vec<f32> {
             }
             dists[ci] = s;
         }
-        dists
     }
-}
-
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2", target_feature = "fma"))]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn compute_centroid_dists_avx2(q: &[f32; DIM], centroids: &[f32], dists: &mut [f32]) {
-    use std::arch::x86_64::*;
-    let cp = centroids.as_ptr();
-    let dp = dists.as_mut_ptr();
-
-    let qd0 = _mm256_set1_ps(q[0]);
-    let mut ci = 0usize;
-    while ci + 16 <= K {
-        let c0 = _mm256_loadu_ps(cp.add(ci));
-        let c1 = _mm256_loadu_ps(cp.add(ci + 8));
-        let d0 = _mm256_sub_ps(c0, qd0);
-        let d1 = _mm256_sub_ps(c1, qd0);
-        _mm256_storeu_ps(dp.add(ci), _mm256_mul_ps(d0, d0));
-        _mm256_storeu_ps(dp.add(ci + 8), _mm256_mul_ps(d1, d1));
-        ci += 16;
-    }
-    while ci + 8 <= K {
-        let c0 = _mm256_loadu_ps(cp.add(ci));
-        let d0 = _mm256_sub_ps(c0, qd0);
-        _mm256_storeu_ps(dp.add(ci), _mm256_mul_ps(d0, d0));
-        ci += 8;
-    }
-    while ci < K {
-        let diff = *cp.add(ci) - q[0];
-        *dp.add(ci) = diff * diff;
-        ci += 1;
-    }
-
-    for d in 1..DIM {
-        let row = d * K;
-        let qd = _mm256_set1_ps(q[d]);
-        let mut ci = 0usize;
-        while ci + 16 <= K {
-            let c0 = _mm256_loadu_ps(cp.add(row + ci));
-            let c1 = _mm256_loadu_ps(cp.add(row + ci + 8));
-            let diff0 = _mm256_sub_ps(c0, qd);
-            let diff1 = _mm256_sub_ps(c1, qd);
-            let a0 = _mm256_loadu_ps(dp.add(ci));
-            let a1 = _mm256_loadu_ps(dp.add(ci + 8));
-            _mm256_storeu_ps(dp.add(ci), _mm256_fmadd_ps(diff0, diff0, a0));
-            _mm256_storeu_ps(dp.add(ci + 8), _mm256_fmadd_ps(diff1, diff1, a1));
-            ci += 16;
-        }
-        while ci + 8 <= K {
-            let cv = _mm256_loadu_ps(cp.add(row + ci));
-            let diff = _mm256_sub_ps(cv, qd);
-            let a = _mm256_loadu_ps(dp.add(ci));
-            _mm256_storeu_ps(dp.add(ci), _mm256_fmadd_ps(diff, diff, a));
-            ci += 8;
-        }
-        while ci < K {
-            let diff = *cp.add(row + ci) - q[d];
-            *dp.add(ci) += diff * diff;
-            ci += 1;
-        }
-    }
+    dists
 }
 
 fn scan_cluster(q: &[i16; DIM], ds: &Dataset, ci: usize, top: &mut Top5) {
@@ -269,6 +226,7 @@ unsafe fn scan_block16_avx2(
 
     let block_base = blk * BLOCK_SIZE * DIM;
     let lane_start = blk * BLOCK_SIZE;
+
     let block_ptr = ds.blocks.as_ptr().add(block_base);
 
     let mut acc_lo = _mm256_setzero_si256();
