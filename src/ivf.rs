@@ -216,7 +216,7 @@ fn scan_cluster(q: &[i16; DIM], ds: &Dataset, ci: usize, top: &mut Top5) {
     #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
     {
         for blk in first_block..last_block_excl {
-            unsafe { scan_block16_avx2(q, ds, blk, last_block_excl, start, end, top) };
+            unsafe { scan_block16_avx2(q, ds, blk, start, end, top) };
         }
         return;
     }
@@ -261,7 +261,6 @@ unsafe fn scan_block16_avx2(
     q: &[i16; DIM],
     ds: &Dataset,
     blk: usize,
-    last_block_excl: usize,
     cluster_start: usize,
     cluster_end: usize,
     top: &mut Top5,
@@ -272,49 +271,10 @@ unsafe fn scan_block16_avx2(
     let lane_start = blk * BLOCK_SIZE;
     let block_ptr = ds.blocks.as_ptr().add(block_base);
 
-    // Prefetch a few blocks ahead (each block = 14 * 16 * 2 = 448 bytes = 7 cache lines)
-    let look_ahead = 4usize;
-    if blk + look_ahead < last_block_excl {
-        let p = ds.blocks.as_ptr().add((blk + look_ahead) * BLOCK_SIZE * DIM);
-        _mm_prefetch(p as *const i8, _MM_HINT_T0);
-        _mm_prefetch(p.add(64 / 2) as *const i8, _MM_HINT_T0);
-        _mm_prefetch(p.add(128 / 2) as *const i8, _MM_HINT_T0);
-        _mm_prefetch(p.add(192 / 2) as *const i8, _MM_HINT_T0);
-        _mm_prefetch(p.add(256 / 2) as *const i8, _MM_HINT_T0);
-        _mm_prefetch(p.add(320 / 2) as *const i8, _MM_HINT_T0);
-        _mm_prefetch(p.add(384 / 2) as *const i8, _MM_HINT_T0);
-    }
-
-    let worst_v = _mm256_set1_epi32(top.worst().min(i32::MAX as u64) as i32);
-
     let mut acc_lo = _mm256_setzero_si256();
     let mut acc_hi = _mm256_setzero_si256();
 
-    // First half (7 dims)
-    for d in 0..7 {
-        let qd = _mm256_set1_epi32(q[d] as i32);
-        let dim_ptr = block_ptr.add(d * BLOCK_SIZE);
-        let v_lo_i16 = _mm_loadu_si128(dim_ptr as *const _);
-        let v_hi_i16 = _mm_loadu_si128(dim_ptr.add(8) as *const _);
-        let v_lo = _mm256_cvtepi16_epi32(v_lo_i16);
-        let v_hi = _mm256_cvtepi16_epi32(v_hi_i16);
-        let diff_lo = _mm256_sub_epi32(v_lo, qd);
-        let diff_hi = _mm256_sub_epi32(v_hi, qd);
-        acc_lo = _mm256_add_epi32(acc_lo, _mm256_mullo_epi32(diff_lo, diff_lo));
-        acc_hi = _mm256_add_epi32(acc_hi, _mm256_mullo_epi32(diff_hi, diff_hi));
-    }
-
-    // Partial early-out: if all 16 lanes already >= worst, skip remaining 7 dims.
-    // cmpgt(worst, acc) → true when acc < worst (lane is still candidate).
-    let cmp_lo = _mm256_cmpgt_epi32(worst_v, acc_lo);
-    let cmp_hi = _mm256_cmpgt_epi32(worst_v, acc_hi);
-    let cand_mask = _mm256_movemask_epi8(cmp_lo) | _mm256_movemask_epi8(cmp_hi);
-    if cand_mask == 0 {
-        return;
-    }
-
-    // Second half (7 dims)
-    for d in 7..DIM {
+    for d in 0..DIM {
         let qd = _mm256_set1_epi32(q[d] as i32);
         let dim_ptr = block_ptr.add(d * BLOCK_SIZE);
         let v_lo_i16 = _mm_loadu_si128(dim_ptr as *const _);
