@@ -1,7 +1,7 @@
 use crate::index::Dataset;
 
 pub const K: usize = 4096;
-pub const NPROBE_PRIMARY: usize = 8;
+pub const NPROBE_PRIMARY: usize = 4;
 pub const NPROBE_REFINE: usize = 24;
 pub const BLOCK_SIZE: usize = 16;
 pub const DIM: usize = 14;
